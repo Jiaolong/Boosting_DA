@@ -76,8 +76,12 @@ void AdaBoost(const int T, const size_t size_samples, const size_t size_classifi
         }
         
         // Stop condition
-        if(min_error > 0.49999) // worse than random guess
+        if(min_error > 0.4999) // worse than random guess
+        {
+            alpha[t] = 1.0;
+            best_t[t] = bestclassifier + 1;// add 1 for matlab index
             break;
+        }
         
         // Compute alpha
         alpha[t]  = 0.5*log((1.0f-min_error)/min_error);
@@ -97,7 +101,7 @@ void AdaBoost(const int T, const size_t size_samples, const size_t size_classifi
         for(unsigned int i=0; i< size_samples; i++)
             Wi[i] = Wi[i]/sum_wi;
         
-        mexPrintf("\nIter: %d, error = %f, best classifier = %d alpha = %f", t, min_error, bestclassifier, alpha[t]);
+        mexPrintf("\nIter: %d, error = %f, best classifier = %d alpha = %f", t+1, min_error, int(best_t[t]), alpha[t]);
 
     }
 }
@@ -108,7 +112,7 @@ void AdaBoost(const int T, const size_t size_samples, const size_t size_classifi
 //        size_samples         - number of samples
 //        size_classifiers     - number of classifiers
 //        labels               - Nx1 vector, positive = 1, negative = -1
-//        domains              - Nx1 vector, auxiliary = 0, target = 1
+//        domains              - Nx1 vector, source = 0, target = 1
 //        hyp_weakclassifiers  - hypothesis of weak classifiers. Colum vector of a NxK matrix where N is the number of samples, K is the number of weak classifiers.
 //        Wi                   - Initial weight of the samples
 // return:
@@ -118,22 +122,30 @@ void AdaBoost(const int T, const size_t size_samples, const size_t size_classifi
 // Following ICML 2007 "Boosting for Transfer Learning"
 void TrAdaBoost(const int T, const size_t size_samples, const size_t size_classifiers, const double* labels, const double* domains, double* hyps, double* Wi, double* alpha,  double* best_t, const bool dynamic_cost = false)
 {
-    int num_aux = 0;
+    int num_src = 0;
     // Initialize the weight
     for(unsigned int i=0; i< size_samples; i++)
         if(domains[i]==0)
-            num_aux++;
-
+            num_src++;
+    
+    double A =  0.5*log(1 + sqrt(2*log(num_src/T)));
+    double Ct = 1;
     // Loop
     for(unsigned int t=0; t<T; t++)
     {
         // Step 1: Compute probabilities of each sample
         double sum_wi = 0;
+        double sum_wi_tar = 0;
         for(unsigned int i=0; i< size_samples; i++)
             sum_wi += Wi[i];
         
         for(unsigned int i=0; i< size_samples; i++)
+        {
             Wi[i] = Wi[i]/sum_wi;
+            
+            if(domains[i]==1)
+                sum_wi_tar += Wi[i];
+        }
         
         // Step 2: Find the best weak classifier with minimum error
         int bestclassifier = call_learner(hyps, labels, Wi, size_classifiers, size_samples);
@@ -145,48 +157,50 @@ void TrAdaBoost(const int T, const size_t size_samples, const size_t size_classi
             if(domains[i]==1)// target domain
             {
                 if(hyps[bestclassifier*size_samples+i]!=labels[i])
-                    error_tar += Wi[i];
+                    error_tar += Wi[i]/sum_wi_tar;
             }
         }
 
         // Stop condition
-        if(error_tar > 0.49999) // worse than random guess
+        if(error_tar > 0.4999) // worse than random guess
+        {
+            alpha[t] = 1.0;
+            best_t[t] = bestclassifier + 1;// add 1 for matlab index
             break;
+        }
         
         // Step 4: Compute alpha
         alpha[t]            = 0.5*log((1.0f-error_tar)/error_tar);
-        double Ct           = 1;
         if(dynamic_cost)
             Ct = 2*(1 - error_tar);// dynamic cost
         
-        double alpha_aux    = Ct*0.5*log(1 + sqrt(2*log(num_aux/T)));
+        double alpha_src    = Ct*A;
         best_t[t] = bestclassifier + 1;// add 1 for matlab index
 
         // Step 5: update the weight of each sample
         for(unsigned int i=0; i< size_samples; i++)
         {
             bool predict = (labels[i]==hyps[bestclassifier*size_samples+i]);
-            if(domains[i]==0)// update auxiliary weight
-                Wi[i] = Wi[i]*exp(-alpha_aux*(!predict));
+            if(domains[i]==0)// update source weight
+                Wi[i] = Wi[i]*exp(-alpha_src*(!predict));
             else// target domain
                 Wi[i] = Wi[i]*exp(alpha[t]*(!predict));
         }
-        mexPrintf("\nIter: %d, error = %f, best classifier = %d alpha = %f", t, error_tar, bestclassifier, alpha[t]);
+        mexPrintf("\nIter: %d, error = %f, best classifier = %d alpha = %f", t+1, error_tar, int(best_t[t]), alpha[t]);
 	}
 }
 
 // Boosting for transfer learning using dynamic updating
-// Input: 
-//        T                    - maximum iteration times
-//        size_samples         - number of samples
-//        size_classifiers     - number of classifiers
-//        labels               - Nx1 vector, positive = 1, negative = -1
-//        domains              - Nx1 vector, auxiliary = 0, target = 1
-//        hyp_weakclassifiers  - hypothesis of weak classifiers. Colum vector of a NxK matrix where N is the number of samples, K is the number of weak classifiers.
-// return:
+// INPUT: 
+//        T:                     maximum iteration times
+//        labels:                Nx1 vector, positive = 1, negative = -1
+//        domains:               Nx1 vector, source = 0, target = 1
+//        hyp_weakclassifiers:   hypothesis of weak classifiers. Colum vector of a NxK matrix where N is the number of samples, K is the number of weak classifiers.
+//        Wi:                    initial weights
+// OUTPUT:
 //        strong classifier H, including two fields
-//        'alpha': alpha of each weak classifier
-//        'best_t': best weak classifier in each iteration
+//        alpha:                 alpha of each weak classifier
+//        best_t:                best weak classifier in each iteration
 // Reference: ECMPKDD'11: "Adaptive Boosting for Transfer Learning using Dynamic Updates"
 void DTrAdaBoost(const int T, const size_t size_samples, const size_t size_classifiers, const double* labels, const double* domains, double* hyps, double* Wi, double* alpha, double* best_t)
 {
